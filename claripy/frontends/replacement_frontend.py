@@ -276,6 +276,13 @@ class ReplacementFrontend(ConstrainedFrontend):
 
         return added
 
+    def merge(self, others, merge_conditions, common_ancestor=None):
+        result, merged = super(ReplacementFrontend, self).merge(others, merge_conditions, common_ancestor=None)
+        for other in others:
+            for var, val in other._replacements.items():
+                merged.add_replacement(var.ast, val)
+        return True, merged
+
 
 from ..ast.base import Base
 from ..ast.bv import BVV
