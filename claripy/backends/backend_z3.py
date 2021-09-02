@@ -52,8 +52,6 @@ def _add_memory_pressure(p):
 # track the count of solves
 solve_count = 0
 
-supports_fp = hasattr(z3, 'fpEQ')
-
 # as of z3 4.8.7.0 this seems to matter
 z3.set_param('rewriter.hi_fp_unspecified', 'true')
 
@@ -71,13 +69,6 @@ def condom(f):
         except z3.Z3Exception as ze:
             raise ClaripyZ3Error() from ze
     return z3_condom
-
-def _raw_caller(f):
-    @staticmethod
-    @condom
-    def raw_caller(*args, **kwargs):
-        return f(*args, **kwargs)
-    return raw_caller
 
 def _z3_decl_name_str(ctx, decl):
     decl_name = z3.Z3_get_decl_name(ctx, decl)
@@ -108,7 +99,6 @@ class BackendZ3(Backend):
     def __init__(self, reuse_z3_solver=None, ast_cache_size=10000):
         Backend.__init__(self, solver_required=True)
         self._enable_simplification_cache = False
-        self._hash_to_constraint = weakref.WeakValueDictionary()
 
         # Per-thread Z3 solver
         # This setting is treated as a global setting and is not supposed to be changed during runtime, unless you know
@@ -121,8 +111,8 @@ class BackendZ3(Backend):
         self._ast_cache_size = ast_cache_size
 
         # and the operations
-        all_ops = backend_fp_operations | backend_operations if supports_fp else backend_operations
-        all_ops |= backend_strings_operations - {'StrIsDigit'} 
+        all_ops = backend_fp_operations | backend_operations
+        all_ops |= backend_strings_operations - {'StrIsDigit'}
         for o in all_ops - {'BVV', 'BoolV', 'FPV', 'FPS', 'BitVec', 'StringV'}:
             self._op_raw[o] = getattr(self, '_op_raw_' + o)
         self._op_raw['Xor'] = self._op_raw_Xor
@@ -133,7 +123,6 @@ class BackendZ3(Backend):
         self._op_raw['__lt__'] = self._op_raw_ULT
 
         self._op_raw['Reverse'] = self._op_raw_Reverse
-        self._op_raw['Identical'] = self._identical
         self._op_raw['fpToSBV'] = self._op_raw_fpToSBV
         self._op_raw['fpToUBV'] = self._op_raw_fpToUBV
 
@@ -252,13 +241,6 @@ class BackendZ3(Backend):
         self._sym_cache.clear()
         self._simplification_cache_key.clear()
         self._simplification_cache_val.clear()
-
-    @condom
-    def _size(self, a):
-        if not isinstance(a, z3.BitVecRef) and not isinstance(a, z3.BitVecNumRef):
-            l.debug("Unable to determine length of value of type %s", a.__class__)
-            raise BackendError("Unable to determine length of value of type %s" % a.__class__)
-        return a.size()
 
     def _name(self, o): #pylint:disable=unused-argument
         l.warning("BackendZ3.name() called. This is weird.")
@@ -389,7 +371,6 @@ class BackendZ3(Backend):
 
     @condom
     def _abstract(self, e):
-        #return self._abstract(z, split_on=split_on)[0]
         return self._abstract_internal(e.ctx.ctx, e.ast)
 
     @staticmethod
@@ -693,7 +674,7 @@ class BackendZ3(Backend):
         # see https://stackoverflow.com/a/58829514/3154996
         if z3.Z3_get_decl_num_parameters(ctx, decl) != 1:
             raise BackendError("Weird Z3 model")
-        if z3.Z3_get_decl_parameter_kind(ctx, decl, 0) != z3.Z3_PK_SYMBOL:
+        if z3.Z3_get_decl_parameter_kind(ctx, decl, 0) != z3.Z3_PARAMETER_SYMBOL:
             raise BackendError("Weird Z3 model")
         symb = z3.Z3_get_decl_symbol_parameter(ctx, decl, 0)
         if z3.Z3_get_symbol_kind(ctx, symb) != z3.Z3_STRING_SYMBOL:
@@ -712,9 +693,6 @@ class BackendZ3(Backend):
             s = self._tls.solver
             s.reset()
 
-        # for some reason we always reset the solver anyway, so always clear it. REUSE_SOLVER is fundamentally broken
-        self._hash_to_constraint.clear()
-
         # Configure timeouts
         if timeout is not None:
             if 'soft_timeout' in str(s.param_descrs()):
@@ -726,10 +704,10 @@ class BackendZ3(Backend):
 
     def _add(self, s, c, track=False):
         if track:
+            already_tracked = set(str(impl.children()[0]) for impl in s.assertions())
             for constraint in c:
                 name = str(hash(constraint))
-                if name not in self._hash_to_constraint:
-                    self._hash_to_constraint[name] = constraint
+                if name not in already_tracked:
                     s.assert_and_track(constraint, name)
         else:
             s.add(*c)
@@ -745,10 +723,7 @@ class BackendZ3(Backend):
 
     def _unsat_core(self, s):
         cores = s.unsat_core()
-        constraints = [ ]
-        for core in cores:
-            constraints.append(self._hash_to_constraint.get(str(core)))
-        return constraints
+        return [impl.children()[1] for impl in s.assertions() if impl.children()[0] in cores]
 
     @condom
     def _primitive_from_model(self, model, expr):
@@ -767,7 +742,7 @@ class BackendZ3(Backend):
         for m_f in z3_model:
             n = _z3_decl_name_str(m_f.ctx.ctx, m_f.ast).decode()
             m = m_f()
-            me = z3_model.eval(m)
+            me = z3_model.eval(m, model_completion=True)
             model[n] = self._abstract_to_primitive(me.ctx.ctx, me.ast)
 
         return model
@@ -781,18 +756,16 @@ class BackendZ3(Backend):
             solver.add(*extra_constraints)
 
         try:
-
-            l.debug("Doing a check!")
-            #print "CHECKING"
+            l.debug("Doing a check! (satisfiable)")
             if solver.check() != z3.sat:
                 return False
-
             if model_callback is not None:
                 model_callback(self._generic_model(solver.model()))
+            return True
         finally:
             if len(extra_constraints) > 0:
                 solver.pop()
-        return True
+        return False
 
     def _eval(self, expr, n, extra_constraints=(), solver=None, model_callback=None):
         results = self._batch_eval(
@@ -816,7 +789,7 @@ class BackendZ3(Backend):
 
         for i in range(n):
             solve_count += 1
-            l.debug("Doing a check!")
+            l.debug("Doing a check! (batch_eval)")
             if solver.check() != z3.sat:
                 break
             model = solver.model()
@@ -849,18 +822,23 @@ class BackendZ3(Backend):
         return result_values
 
     @condom
-    def _min(self, expr, extra_constraints=(), solver=None, model_callback=None):
+    def _min(self, expr, extra_constraints=(), signed=False, solver=None, model_callback=None):
         global solve_count
 
-        lo = 0
-        hi = 2**expr.size()-1
-        vals = set()
+        if signed:
+            lo = -2**(expr.size()-1)
+            hi = 2**(expr.size()-1)-1
+        else:
+            lo = 0
+            hi = 2**expr.size()-1
 
         if len(extra_constraints) > 0:
             solver.push()
             solver.add(*[self.convert(e) for e in extra_constraints])
 
         numpop = 0
+        GE = operator.ge if signed else z3.UGE
+        LE = operator.le if signed else z3.ULE
 
         # TODO: Can only deal with bitvectors, not floats
         while hi-lo > 1:
@@ -871,16 +849,15 @@ class BackendZ3(Backend):
             # TODO: is this assumption correct?
             # here it's not safe to call directly the z3 low level API since it might happen that the argument is an
             # integer and not a BV
-            solver.add(z3.UGE(expr, lo), z3.ULE(expr, middle))
+            solver.add(GE(expr, lo), LE(expr, middle))
             numpop += 1
 
             solve_count += 1
-            l.debug("Doing a check!")
+            l.debug("Doing a check! (min)")
             if solver.check() == z3.sat:
                 l.debug("... still sat")
                 if model_callback is not None:
                     model_callback(self._generic_model(solver.model()))
-                vals.add(self._primitive_from_model(solver.model(), expr))
                 hi = middle
             else:
                 l.debug("... now unsat")
@@ -893,39 +870,44 @@ class BackendZ3(Backend):
 
         #l.debug("final hi/lo: %d, %d", hi, lo)
 
+        ret = None
         if hi == lo:
-            vals.add(lo)
+            ret = lo
         else:
             solver.push()
             solver.add(expr == lo)
-            l.debug("Doing a check!")
+            l.debug("Doing a check! (min)")
             if solver.check() == z3.sat:
                 if model_callback is not None:
                     model_callback(self._generic_model(solver.model()))
-                vals.add(lo)
-                solver.pop()
+                ret = lo
             else:
-                vals.add(hi)
-                solver.pop()
+                ret = hi
+            solver.pop()
 
         if len(extra_constraints) > 0:
             solver.pop()
 
-        return min(vals)
+        return ret
 
     @condom
-    def _max(self, expr, extra_constraints=(), solver=None, model_callback=None):
+    def _max(self, expr, extra_constraints=(), signed=False, solver=None, model_callback=None):
         global solve_count
 
-        lo = 0
-        hi = 2**expr.size()-1
-        vals = set()
+        if signed:
+            lo = -2**(expr.size()-1)
+            hi = 2**(expr.size()-1)-1
+        else:
+            lo = 0
+            hi = 2**expr.size()-1
 
         if len(extra_constraints) > 0:
             solver.push()
             solver.add(*[self.convert(e) for e in extra_constraints])
 
         numpop = 0
+        GT = operator.gt if signed else z3.UGT
+        LE = operator.le if signed else z3.ULE
 
         # TODO: Can only deal with bitvectors, not floats
         while hi-lo > 1:
@@ -936,17 +918,16 @@ class BackendZ3(Backend):
             # TODO: is this assumption correct?
             # here it's not safe to call directly the z3 low level API since it might happen that the argument is an
             # integer and not a BV
-            solver.add(z3.UGT(expr, middle), z3.ULE(expr, hi))
+            solver.add(GT(expr, middle), LE(expr, hi))
             numpop += 1
 
             solve_count += 1
-            l.debug("Doing a check!")
+            l.debug("Doing a check! (max)")
             if solver.check() == z3.sat:
                 l.debug("... still sat")
-                lo = middle
-                vals.add(self._primitive_from_model(solver.model(), expr))
                 if model_callback is not None:
                     model_callback(self._generic_model(solver.model()))
+                lo = middle
             else:
                 l.debug("... now unsat")
                 hi = middle
@@ -957,25 +938,25 @@ class BackendZ3(Backend):
         for _ in range(numpop):
             solver.pop()
 
+        ret = None
         if hi == lo:
-            vals.add(hi)
+            ret = hi
         else:
             solver.push()
             solver.add(expr == hi)
-            l.debug("Doing a check!")
+            l.debug("Doing a check! (max)")
             if solver.check() == z3.sat:
                 if model_callback is not None:
                     model_callback(self._generic_model(solver.model()))
-                vals.add(hi)
-                solver.pop()
+                ret = hi
             else:
-                vals.add(lo)
-                solver.pop()
+                ret = lo
+            solver.pop()
 
         if len(extra_constraints) > 0:
             solver.pop()
 
-        return max(vals)
+        return ret
 
     def _simplify(self, e): #pylint:disable=W0613,R0201
         raise Exception("This shouldn't be called. Bug Yan.")
@@ -1332,11 +1313,6 @@ class BackendZ3(Backend):
 
     @staticmethod
     @condom
-    def _op_raw_StrExtract(high, low, str_val):
-        return z3.SubString(str_val, low, high + 1 - low)
-
-    @staticmethod
-    @condom
     def _op_raw_StrLen(input_string, bitlength):
         return z3.Int2BV(z3.Length(input_string), bitlength)
 
@@ -1375,13 +1351,8 @@ class BackendZ3(Backend):
 
     @staticmethod
     @condom
-    def _op_raw_IntToStr(input_bvv):
-        return z3.IntToStr(z3.BV2Int(input_bvv))
-
-    @staticmethod
-    @condom
-    def _op_raw_UnitStr(input_bvv):
-        return z3.Unit(input_bvv)
+    def _op_raw_IntToStr(input_bv):
+        return z3.IntToStr(z3.BV2Int(input_bv))
 #
 # this is for the actual->abstract conversion above
 #
@@ -1403,7 +1374,6 @@ op_map = {
     'Z3_OP_IFF': '__eq__',
     'Z3_OP_XOR': 'Xor',
     'Z3_OP_NOT': 'Not',
-    'Z3_OP_IMPLIES': 'Implies',
     #'Z3_OP_OEQ': None,
 
     # Arithmetic
@@ -1559,7 +1529,6 @@ op_type_map = {
     'Z3_OP_IFF': Bool,
     'Z3_OP_XOR': Bool,
     'Z3_OP_NOT': Bool,
-    'Z3_OP_IMPLIES': Bool,
     #'Z3_OP_OEQ': None,
 
     # Arithmetic

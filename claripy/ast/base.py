@@ -1,15 +1,21 @@
-import hashlib
 import itertools
 import logging
 import os
 import struct
 import weakref
 from collections import OrderedDict, deque
+from typing import Optional
 
 try:
     import cPickle as pickle
 except ImportError:
     import pickle
+
+try:
+    # Python's build-in MD5 is about 2x faster than hashlib.md5 on short bytestrings
+    import _md5 as md5
+except ImportError:
+    import hashlib as md5
 
 l = logging.getLogger("claripy.ast")
 
@@ -79,6 +85,7 @@ class Base:
                   '_uc_alloc_depth', 'annotations', 'simplifiable', '_uneliminatable_annotations', '_relocatable_annotations',
                   'depth', '__weakref__']
     _hash_cache = weakref.WeakValueDictionary()
+    _leaf_cache = weakref.WeakValueDictionary()
 
     FULL_SIMPLIFY=1
     LITE_SIMPLIFY=2
@@ -169,19 +176,59 @@ class Base:
             kwargs['uc_alloc_depth'] = None
 
         if 'annotations' not in kwargs or kwargs['annotations'] is None:
-            kwargs['annotations'] = ()
+            annotations = ()
+        else:
+            annotations = kwargs['annotations']
 
-        h = Base._calc_hash(op, a_args, kwargs) if hash is None else hash
-        self = cls._hash_cache.get(h, None)
+        # process annotations
+        if 'skip_child_annotations' in kwargs:
+            skip_child_annotations = kwargs.pop('skip_child_annotations')
+        else:
+            skip_child_annotations = False
+
+        if not annotations and not args_have_annotations:
+            uneliminatable_annotations = frozenset()
+            relocatable_annotations = frozenset()
+        else:
+            ast_args = tuple(a for a in a_args if isinstance(a, Base))
+            uneliminatable_annotations = frozenset(itertools.chain(
+                itertools.chain.from_iterable(a._uneliminatable_annotations for a in ast_args) if not skip_child_annotations else tuple(),
+                tuple(a for a in annotations if not a.eliminatable and not a.relocatable)
+            ))
+
+            relocatable_annotations = OrderedDict((e, True) for e in tuple(itertools.chain(
+                itertools.chain.from_iterable(a._relocatable_annotations for a in ast_args) if not skip_child_annotations else tuple(),
+                tuple(a for a in annotations if not a.eliminatable and a.relocatable)
+            ))).keys()
+
+            annotations = tuple(itertools.chain(
+                itertools.chain.from_iterable(a._relocatable_annotations for a in ast_args) if not skip_child_annotations else tuple(),
+                tuple(a for a in annotations)
+            ))
+
+        kwargs['annotations'] = annotations
+
+        cache = cls._hash_cache
+        if hash is not None:
+            h = hash
+        elif op in {'BVS', 'BVV', 'BoolS', 'BoolV', 'FPS', 'FPV'} and not annotations:
+            h = (op, kwargs.get('length', None), a_args)
+            cache = cls._leaf_cache
+        else:
+            h = Base._calc_hash(op, a_args, kwargs) if hash is None else hash
+        self = cache.get(h, None)
         if self is None:
             self = super(Base, cls).__new__(cls)
             depth = arg_max_depth + 1
-            self.__a_init__(op, a_args, depth=depth, args_have_annotations=args_have_annotations, **kwargs)
+            self.__a_init__(op, a_args, depth=depth,
+                            uneliminatable_annotations=uneliminatable_annotations,
+                            relocatable_annotations=relocatable_annotations,
+                            **kwargs)
             self._hash = h
-            cls._hash_cache[h] = self
-        # else:
-        #    if self.args != f_args or self.op != f_op or self.variables != f_kwargs['variables']:
-        #        raise Exception("CRAP -- hash collision")
+            cache[h] = self
+        #else:
+        #   if self.args != a_args or self.op != op or self.variables != kwargs['variables']:
+        #       raise Exception("CRAP -- hash collision")
 
         return self
 
@@ -206,25 +253,103 @@ class Base:
         We do it using md5 to avoid hash collisions.
         (hash(-1) == hash(-2), for example)
         """
-        args_tup = tuple(a if type(a) in (int, float) else hash(a) for a in args)
+        args_tup = tuple(a if type(a) in (int, float) else getattr(a, '_hash', hash(a)) for a in args)
         # HASHCONS: these attributes key the cache
         # BEFORE CHANGING THIS, SEE ALL OTHER INSTANCES OF "HASHCONS" IN THIS FILE
-        to_hash = (
-            op, args_tup,
-            str(keywords.get('length', None)),
-            hash(keywords['variables']),
-            keywords['symbolic'],
-            hash(keywords.get('annotations', None)),
-        )
+
+        to_hash = Base._ast_serialize(op, args_tup, keywords)
+        if to_hash is None:
+            # fall back to pickle.dumps
+            to_hash = (
+                op, args_tup,
+                str(keywords.get('length', None)),
+                hash(keywords['variables']),
+                keywords['symbolic'],
+                hash(keywords.get('annotations', None)),
+            )
+            to_hash = pickle.dumps(to_hash, -1)
 
         # Why do we use md5 when it's broken? Because speed is more important
         # than cryptographic integrity here. Then again, look at all those
         # allocations we're doing here... fast python is painful.
-        hd = hashlib.md5(pickle.dumps(to_hash, -1)).digest()
+        hd = md5.md5(to_hash).digest()
         return md5_unpacker.unpack(hd)[0] # 64 bits
 
+    @staticmethod
+    def _arg_serialize(arg) -> Optional[bytes]:
+        if arg is None:
+            return b'\x0f'
+        elif arg is True:
+            return b'\x1f'
+        elif arg is False:
+            return b'\x2e'
+        elif type(arg) is int:
+            if arg < 0:
+                if arg >= -0x7fff:
+                    return b'-' + struct.pack("<h", arg)
+                elif arg >= -0x7fff_ffff:
+                    return b'-' + struct.pack("<i", arg)
+                elif arg >= -0x7fff_ffff_ffff_ffff:
+                    return b'-' + struct.pack("<q", arg)
+                return None
+            else:
+                if arg <= 0xffff:
+                    return struct.pack("<H", arg)
+                elif arg <= 0xffff_ffff:
+                    return struct.pack("<I", arg)
+                elif arg <= 0xffff_ffff_ffff_ffff:
+                    return struct.pack("<Q", arg)
+                return None
+        elif type(arg) is str:
+            return arg.encode()
+        elif type(arg) is float:
+            return struct.pack('f', arg)
+        elif type(arg) is tuple:
+            arr = [ ]
+            for elem in arg:
+                b = Base._arg_serialize(elem)
+                if b is None:
+                    return None
+                arr.append(b)
+            return b"".join(arr)
+
+        return None
+
+    @staticmethod
+    def _ast_serialize(op: str, args_tup, keywords) -> Optional[bytes]:
+        """
+        Serialize the AST and get a bytestring for hashing.
+
+        :param op:          The operator.
+        :param args_tup:    A tuple of arguments.
+        :param keywords:    A dict of keywords.
+        :return:            The serialized bytestring.
+        """
+
+        serialized_args = Base._arg_serialize(args_tup)
+        if serialized_args is None:
+            return None
+
+        if 'length' in keywords:
+            length = Base._arg_serialize(keywords['length'])
+            if length is None:
+                return None
+        else:
+            length = b'none'
+
+        variables = struct.pack("<Q", hash(keywords['variables']) & 0xffff_ffff_ffff_ffff)
+        symbolic = b'\x01' if keywords['symbolic'] else b'\x00'
+        if 'annotations' in keywords:
+            annotations = struct.pack("<Q", hash(keywords['annotations']) & 0xffff_ffff_ffff_ffff)
+        else:
+            annotations = b'\xf9'
+
+        return op.encode() + serialized_args + length + variables + symbolic + annotations
+
     #pylint:disable=attribute-defined-outside-init
-    def __a_init__(self, op, args, variables=None, symbolic=None, length=None, simplified=0, errored=None, eager_backends=None, uninitialized=None, uc_alloc_depth=None, annotations=None, encoded_name=None, depth=None, args_have_annotations=None):  #pylint:disable=unused-argument
+    def __a_init__(self, op, args, variables=None, symbolic=None, length=None, simplified=0, errored=None,
+                   eager_backends=None, uninitialized=None, uc_alloc_depth=None, annotations=None,
+                   encoded_name=None, depth=None, uneliminatable_annotations=None, relocatable_annotations=None):  #pylint:disable=unused-argument
         """
         Initializes an AST. Takes the same arguments as ``Base.__new__()``
 
@@ -240,6 +365,8 @@ class Base:
         self.variables = frozenset(variables) if type(variables) is not frozenset else variables
         self.symbolic = symbolic
         self.annotations = annotations
+        self._uneliminatable_annotations = uneliminatable_annotations
+        self._relocatable_annotations = relocatable_annotations
 
 
         self.depth = depth if depth is not None else 1
@@ -257,33 +384,16 @@ class Base:
         self._uninitialized = uninitialized
         self._uc_alloc_depth = uc_alloc_depth
 
-        if not annotations and not args_have_annotations:
-            self._uneliminatable_annotations = frozenset()
-            self._relocatable_annotations = frozenset()
-        else:
-            ast_args = tuple(a for a in self.args if isinstance(a, Base))
-            self._uneliminatable_annotations = frozenset(itertools.chain(
-                itertools.chain.from_iterable(a._uneliminatable_annotations for a in ast_args),
-                tuple(a for a in self.annotations if not a.eliminatable and not a.relocatable)
-            ))
-
-            self._relocatable_annotations = OrderedDict((e, True) for e in tuple(itertools.chain(
-                itertools.chain.from_iterable(a._relocatable_annotations for a in ast_args),
-                tuple(a for a in self.annotations if not a.eliminatable and a.relocatable)
-            ))).keys()
-
-            self.annotations = tuple(itertools.chain(
-                itertools.chain.from_iterable(a._relocatable_annotations for a in ast_args),
-                tuple(a for a in self.annotations)
-            ))
-
         if len(self.args) == 0:
             raise ClaripyOperationError("AST with no arguments!")
 
     #pylint:enable=attribute-defined-outside-init
 
     def __hash__(self):
-        return self._hash
+        res = self._hash
+        if type(self._hash) is not int:
+            res = hash(self._hash)
+        return res
 
     @property
     def cache_key(self):
@@ -341,7 +451,7 @@ class Base:
     #
 
     def _apply_to_annotations(self, f):
-        return self.make_like(self.op, self.args, annotations=f(self.annotations))
+        return self.make_like(self.op, self.args, annotations=f(self.annotations), skip_child_annotations=True)
 
     def append_annotation(self, a):
         """

@@ -97,14 +97,40 @@ class Balancer:
 
     @staticmethod
     def _min(a, signed=False):
-        if not signed: bounds = backends.vsa.convert(a)._unsigned_bounds()
-        else: bounds = backends.vsa.convert(a)._signed_bounds()
+        converted = backends.vsa.convert(a)
+        if isinstance(converted, vsa.ValueSet):
+            if len(converted.regions) == 1:
+                converted = list(converted.regions.values())[0]
+            else:
+                # unfortunately, this is a real abstract pointer
+                # the minimum value will be 0 or MIN_INT
+                if signed:
+                    return -(1 << (len(converted) - 1))
+                else:
+                    return 0
+        if not signed:
+            bounds = converted._unsigned_bounds()
+        else:
+            bounds = converted._signed_bounds()
         return min(mn for mn,mx in bounds)
 
     @staticmethod
     def _max(a, signed=False):
-        if not signed: bounds = backends.vsa.convert(a)._unsigned_bounds()
-        else: bounds = backends.vsa.convert(a)._signed_bounds()
+        converted = backends.vsa.convert(a)
+        if isinstance(converted, vsa.ValueSet):
+            if len(converted.regions) == 1:
+                converted = list(converted.regions.values())[0]
+            else:
+                # unfortunately, this is a real abstract pointer
+                # the minimum value will be 0 or MIN_INT
+                if signed:
+                    return (1 << (len(converted) - 1)) - 1
+                else:
+                    return (1 << len(converted)) - 1
+        if not signed:
+            bounds = converted._unsigned_bounds()
+        else:
+            bounds = converted._signed_bounds()
         return max(mx for mn,mx in bounds)
 
     def _range(self, a, signed=False):
@@ -200,6 +226,9 @@ class Balancer:
                 continue
 
             unpacked_truisms = self._unpack_truisms(truism)
+            if is_false(truism):
+                raise ClaripyBalancerUnsatError()
+
             self._processed_truisms.add(truism)
             if len(unpacked_truisms):
                 self._queue_truisms(unpacked_truisms, check_true=True)
@@ -452,8 +481,8 @@ class Balancer:
             new_right = _all_operations.Concat(truism.args[1], BVV(0, len(left_lsb)))
             return truism.make_like(truism.op, (new_left, new_right))
 
-        if low == 0 and truism.args[1].op == 'BVV':
-            # single-valued rhs value
+        if low == 0 and truism.args[1].op == 'BVV' and truism.op not in {'SGE', 'SLE', 'SGT', 'SLT'}:
+            # single-valued rhs value with an unsigned operator
             # Eliminate Extract on lhs and zero-extend the value on rhs
             new_left = inner
             new_right = _all_operations.ZeroExt(inner.size() - truism.args[1].size(), truism.args[1])

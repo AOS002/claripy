@@ -126,8 +126,119 @@ def test_concrete_flatten():
     i = d - 10
     nose.tools.assert_is(i, b)
 
+
+def test_mask_eq_constant():
+    # <Bool ((0#48 .. (0x0 .. sim_data_4_31_8[0:0])[15:0]) & 0xffff) == 0x0>
+
+    a = claripy.BVS("sim_data", 8, explicit_name=True)
+    expr = (claripy.ZeroExt(
+        48,
+        claripy.Extract(
+            15,
+            0,
+            claripy.Concat(
+                claripy.BVV(0, 63),
+                a[0:0]
+            )
+        )) & 0xffff) == 0x0
+
+    assert expr.op == "__eq__"
+    assert expr.args[0].op == "Extract"
+    assert expr.args[0].args[0] == 0 and expr.args[0].args[1] == 0
+    assert expr.args[0].args[2] is a
+    assert expr.args[1].op == "BVV" and expr.args[1].args == (0, 1)
+
+    # the highest bit of the mask (0x1fff) is not aligned to 8
+    # we want the mask to be BVV(16, 0x1fff) instead of BVV(13, 0x1fff)
+    a = claripy.BVS("sim_data", 8, explicit_name=True)
+    expr = (claripy.ZeroExt(
+        48,
+        claripy.Extract(
+            15,
+            0,
+            claripy.Concat(
+                claripy.BVV(0, 63),
+                a[0:0]
+            )
+        )) & 0x1fff) == 0x0
+
+    assert expr.op == "__eq__"
+    assert expr.args[0].op == "__and__"
+    _, arg1 = expr.args[0].args
+    assert arg1.size() == 16
+    assert arg1.args[0] == 0x1fff
+
+
+def test_and_mask_comparing_against_constant_simplifier():
+
+    # A & mask == b  ==>  Extract(_, _, A) == Extract(_, _, b) iff high bits of a and b are zeros
+    a = claripy.BVS('a', 8)
+    b = claripy.BVV(0x10, 32)
+
+    expr = claripy.ZeroExt(24, a) & 0xffff == b
+    assert expr is (a == 16)
+
+    expr = claripy.Concat(claripy.BVV(0, 24), a) & 0xffff == b
+    assert expr is (a == 16)
+
+    # A & mask != b ==> Extract(_, _, A) != Extract(_, _, b) iff high bits of a and b are zeros
+    a = claripy.BVS('a', 8)
+    b = claripy.BVV(0x102000aa, 32)
+
+    expr = claripy.ZeroExt(24, a) & 0xffff == b
+    assert expr.is_false()
+
+    expr = claripy.Concat(claripy.BVV(0, 24), a) & 0xffff == b
+    assert expr.is_false()
+
+    # A & 0 == 0 ==> true
+    a = claripy.BVS('a', 32)
+    b = claripy.BVV(0, 32)
+    expr = (a & 0) == b
+    assert expr.is_true()
+    expr = (a & 0) == claripy.BVV(1, 32)
+    assert expr.is_false()
+
+def test_zeroext_extract_comparing_against_constant_simplifier():
+
+    a = claripy.BVS('a', 8, explicit_name=True)
+    b = claripy.BVV(0x28, 16)
+
+    expr = claripy.Extract(15, 0, claripy.ZeroExt(24, a)) == b
+    assert expr is (a == claripy.BVV(0x28, 8))
+
+    expr = claripy.Extract(7, 0, claripy.ZeroExt(24, a)) == claripy.BVV(0x28, 8)
+    assert expr is (a == claripy.BVV(0x28, 8))
+
+    expr = claripy.Extract(7, 0, claripy.ZeroExt(1, a)) == claripy.BVV(0x28, 8)
+    assert expr is (a == claripy.BVV(0x28, 8))
+
+    expr = claripy.Extract(6, 0, claripy.ZeroExt(24, a)) == claripy.BVV(0x28, 7)
+    assert expr.op == "__eq__"
+    assert expr.args[0].op == "Extract" and expr.args[0].args[0] == 6 and expr.args[0].args[1] == 0
+    assert expr.args[0].args[2] is a
+    assert expr.args[1].args == (0x28, 7)
+
+    expr = claripy.Extract(15, 0, claripy.Concat(claripy.BVV(0, 48), a)) == b
+    assert expr is (a == claripy.BVV(0x28, 8))
+
+    bb = claripy.BVV(0x28, 24)
+    d = claripy.BVS('d', 8, explicit_name=True)
+    expr = claripy.Extract(23, 0, claripy.Concat(claripy.BVV(0, 24), d)) == bb
+    assert expr is (d == claripy.BVV(0x28, 8))
+
+    dd = claripy.BVS('dd', 23, explicit_name=True)
+    expr = claripy.Extract(23, 0, claripy.Concat(claripy.BVV(0, 2), dd)) == bb
+    assert expr is (dd == claripy.BVV(0x28, 23))
+
+    # this was incorrect before
+    # claripy issue #201
+    expr = claripy.Extract(31, 8, claripy.Concat(claripy.BVV(0, 24), dd)) == claripy.BVV(0xffff, 24)
+    assert expr is not (dd == claripy.BVV(0xffff, 23))
+
+
 def perf():
-    import timeit
+    import timeit  # pylint:disable=import-outside-toplevel
     print(timeit.timeit("perf_boolean_and_simplification_0()",
                         number=10,
                         setup="from __main__ import perf_boolean_and_simplification_0"))
@@ -143,3 +254,6 @@ if __name__ == '__main__':
     test_reverse_extract_reverse_simplification()
     test_reverse_concat_reverse_simplification()
     test_concrete_flatten()
+    test_mask_eq_constant()
+    test_and_mask_comparing_against_constant_simplifier()
+    test_zeroext_extract_comparing_against_constant_simplifier()

@@ -59,6 +59,7 @@ def op(name, arg_types, return_type, extra_check=None, calc_length=None, do_coer
             kwargs['length'] = calc_length(*fixed_args)
 
         kwargs['uninitialized'] = None
+        #pylint:disable=isinstance-second-argument-not-valid-type
         if any(a.uninitialized is True for a in args if isinstance(a, ast.Base)):
             kwargs['uninitialized'] = True
         if name in preprocessors:
@@ -73,6 +74,7 @@ def _handle_annotations(simp, args):
     if simp is None:
         return None
 
+    #pylint:disable=isinstance-second-argument-not-valid-type
     ast_args = tuple(a for a in args if isinstance(a, ast.Base))
     preserved_relocatable = frozenset(simp._relocatable_annotations)
     relocated_annotations = set()
@@ -142,6 +144,9 @@ def extract_check(high, low, bv):
 
     return True, ""
 
+def extend_check(amount, value):
+    return amount >= 0, "Extension length must be nonnegative"
+
 def concat_length_calc(*args):
     return sum(arg.length for arg in args)
 
@@ -151,19 +156,6 @@ def extract_length_calc(high, low, _):
 
 def str_basic_length_calc(str_1):
     return str_1.string_length
-
-def str_extract_check(start_idx, count, str_val):
-    if start_idx < 0:
-        return False, "StrExtract start_idx must be nonnegative"
-    elif count <= 0:
-        return False, "StrExtract count must be positive"
-    elif start_idx + count > str_val.string_length:
-        return False, "count must not exceed the length of the string."
-    else:
-        return True, ""
-
-def str_extract_length_calc(start_idx, count, str_val): # pylint: diable=unused-argument
-    return count
 
 def int_to_str_length_calc(int_val): # pylint: disable=unused-argument
     return ast.String.MAX_LENGTH
@@ -197,7 +189,7 @@ def str_replace_length_calc(*args):
     # Otherwise We have the maximum length when teh replacement happens
     return str_1.string_length - str_2.string_length + str_3.string_length
 
-def strlen_bv_size_calc(s, bitlength):
+def strlen_bv_size_calc(s, bitlength): # pylint: disable=unused-argument
     return bitlength
 
 def strindexof_bv_size_calc(s1, s2, start_idx, bitlength): # pylint: disable=unused-argument
@@ -213,14 +205,12 @@ def strtoint_bv_size_calc(s, bitlength): # pylint: disable=unused-argument
 expression_arithmetic_operations = {
     # arithmetic
     '__add__', '__radd__',
-    '__div__', '__rdiv__',
     '__truediv__', '__rtruediv__',
     '__floordiv__', '__rfloordiv__',
     '__mul__', '__rmul__',
     '__sub__', '__rsub__',
     '__pow__', '__rpow__',
     '__mod__', '__rmod__',
-    '__divmod__', '__rdivmod__',
     'SDiv', 'SMod',
     '__neg__',
     '__pos__',
@@ -293,10 +283,6 @@ backend_symbol_creation_operations = {
     'BoolS', 'BVS', 'FPS', 'StringS'
 }
 
-backend_vsa_creation_operations = {
-    'TopStridedInterval', 'StridedInterval', 'ValueSet', 'AbstractLocation'
-}
-
 backend_other_operations = { 'If' }
 
 backend_arithmetic_operations = {'SDiv', 'SMod'}
@@ -304,7 +290,7 @@ backend_arithmetic_operations = {'SDiv', 'SMod'}
 backend_operations = backend_comparator_operations | backend_bitwise_operations | backend_boolean_operations | \
                      backend_bitmod_operations | backend_creation_operations | backend_other_operations | backend_arithmetic_operations
 backend_operations_vsa_compliant = backend_bitwise_operations | backend_comparator_operations | backend_boolean_operations | backend_bitmod_operations
-backend_operations_all = backend_operations | backend_operations_vsa_compliant | backend_vsa_creation_operations
+backend_operations_all = backend_operations | backend_operations_vsa_compliant
 
 backend_fp_cmp_operations = {
     'fpLT', 'fpLEQ', 'fpGT', 'fpGEQ', 'fpEQ',
@@ -323,14 +309,12 @@ backend_strings_operations = {
 
 opposites = {
     '__add__': '__radd__', '__radd__': '__add__',
-    '__div__': '__rdiv__', '__rdiv__': '__div__',
     '__truediv__': '__rtruediv__', '__rtruediv__': '__truediv__',
     '__floordiv__': '__rfloordiv__', '__rfloordiv__': '__floordiv__',
     '__mul__': '__rmul__', '__rmul__': '__mul__',
     '__sub__': '__rsub__', '__rsub__': '__sub__',
     '__pow__': '__rpow__', '__rpow__': '__pow__',
     '__mod__': '__rmod__', '__rmod__': '__mod__',
-    '__divmod__': '__rdivmod__', '__rdivmod__': '__divmod__',
 
     '__eq__': '__eq__',
     '__ne__': '__ne__',
@@ -355,8 +339,6 @@ opposites = {
 reversed_ops = {
     '__radd__': '__add__',
     '__rand__': '__and__',
-    '__rdiv__': '__div__',
-    '__rdivmod__': '__divmod__',
     '__rfloordiv__': '__floordiv__',
     '__rlshift__': '__lshift__',
     '__rmod__': '__mod__',
@@ -382,12 +364,7 @@ inverse_operations = {
     'SLE': 'SGT', 'SGT': 'SLE',
 }
 
-length_same_operations = expression_arithmetic_operations | backend_bitwise_operations | expression_bitwise_operations | backend_other_operations | expression_set_operations | {'Reversed'}
-length_none_operations = backend_comparator_operations | expression_comparator_operations | backend_boolean_operations | backend_fp_cmp_operations
-length_change_operations = backend_bitmod_operations
-length_new_operations = backend_creation_operations
-
-leaf_operations = backend_symbol_creation_operations | backend_creation_operations | backend_vsa_creation_operations
+leaf_operations = backend_symbol_creation_operations | backend_creation_operations
 leaf_operations_concrete = backend_creation_operations
 leaf_operations_symbolic = backend_symbol_creation_operations
 
@@ -395,7 +372,7 @@ leaf_operations_symbolic = backend_symbol_creation_operations
 # Reversibility
 #
 
-not_invertible = {'Identical', 'union'}
+not_invertible = {'union'}
 reverse_distributable = { 'widen', 'union', 'intersection',
     '__invert__', '__or__', '__ror__', '__and__', '__rand__', '__xor__', '__rxor__',
 }
@@ -404,12 +381,10 @@ infix = {
     '__add__': '+',
     '__sub__': '-',
     '__mul__': '*',
-    '__div__': '/',
     '__floordiv__': '/',
     '__truediv__': '/', # the raw / operator should use integral semantics on bitvectors
     '__pow__': '**',
     '__mod__': '%',
-#    '__divmod__': "don't think this is used either",
 
     '__eq__': '==',
     '__ne__': '!=',
@@ -458,11 +433,9 @@ op_precedence = {  # based on https://en.cppreference.com/w/c/language/operator_
 
     # precedence: 3
     '__mul__': 3,
-    '__div__': 3,
     '__floordiv__': 3,
     '__truediv__': 3, # the raw / operator should use integral semantics on bitvectors
     '__mod__': 3,
-    #'__divmod__': "don't think this is used either",
     'SDiv': 3,
     'SMod': 3,
 

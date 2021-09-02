@@ -5,6 +5,8 @@ from .. import operations
 from .bool import Bool
 from .bv import BV, BVS, BVV
 
+import math
+
 
 class String(Bits):
     """
@@ -27,22 +29,37 @@ class String(Bits):
     def __init__(self, *args, **kwargs):
         str_len = kwargs['length']
         kwargs['length'] *= 8
-        super(String, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.string_length = str_len
 
     def __getitem__(self, rng):
+        '''
+        This is a big endian indexer that takes its arguments as bits but returns bytes.
+        Returns the range of bits in self defined by: [rng.start, rng.end], indexed from the end
+        The bit range may not internally divide any bytes; i.e. low and (high+1) must both be divisible by 8
+        Examples:
+            self[7:0]  -- returns the last byte of self
+            self[15:0] -- returns the last two bytes of self
+            self[8:0]  -- Error! [8:0] is 9 bits, it asks for individual bits of the second to last byte!
+            self[8:1]  -- Error! [8:1] asks for 1 bit from the second to last byte and 7 from the last byte!
+        '''
         if type(rng) is slice:
-            high = rng.start // 8 if rng.start is not None else self.string_length - 1
-            low = rng.stop // 8 if rng.stop is not None else 0
+            bits_low = rng.start if rng.start is not None else 0
+            bits_high = rng.stop if rng.stop is not None else 8*(self.string_length - 1)
+            if bits_high % 8 != 0 or (bits_low+1) % 8 != 0:
+                raise ValueError('Bit indicies must not internally divide bytes!')
+            # high / low form a reverse-indexed byte index
+            high = bits_high // 8
+            low = bits_low // 8
             if high < 0:
                 high = self.string_length + high
             if low < 0:
                 low = self.string_length + low
-
-            # Because we are indexing from the end, what was high becomes low and vice-versa
-            high_str_idx = self.string_length - 1 - low
-            low_str_idx = self.string_length - 1 - high
-            return StrExtract(low_str_idx, high_str_idx + 1 - low_str_idx, self)
+            # StrSubstr takes a front-indexed byte index as a starting point, and a length
+            start_idx = self.string_length - 1 - low
+            if high > low:
+                return StrSubstr(start_idx, 0, self)
+            return StrSubstr(start_idx, 1 + low - high, self)
         else:
             raise ValueError("Only slices allowed for string extraction")
 
@@ -60,9 +77,9 @@ class String(Bits):
         return value
 
     @staticmethod
-    def _from_str(like, value):
+    def _from_str(like, value): # pylint: disable=unused-argument
         return StringV(value)
-    
+
     def strReplace(self, str_to_replace, replacement):
         """
         Replace the first occurence of str_to_replace with replacement
@@ -140,9 +157,6 @@ def StringV(value, length=None, **kwargs):
 StrConcat = operations.op('StrConcat', String, String, calc_length=operations.str_concat_length_calc, bound=False)
 StrSubstr = operations.op('StrSubstr', (BV, BV, String),
                         String, calc_length=operations.substr_length_calc, bound=False)
-StrExtract = operations.op('StrExtract', (int, int, String),
-                              String, extra_check=operations.str_extract_check,
-                              calc_length=operations.str_extract_length_calc, bound=False)
 StrLen = operations.op('StrLen', (String, int), BV, calc_length=operations.strlen_bv_size_calc, bound=False)
 StrReplace = operations.op('StrReplace', (String, String, String), String,
                         extra_check=operations.str_replace_check,
@@ -154,7 +168,6 @@ StrIndexOf = operations.op("StrIndexOf", (String, String, BV, int), BV, calc_len
 StrToInt = operations.op("StrToInt", (String, int), BV, calc_length=operations.strtoint_bv_size_calc, bound=False)
 IntToStr = operations.op("IntToStr", (BV,), String, calc_length=operations.int_to_str_length_calc, bound=False)
 StrIsDigit = operations.op("StrIsDigit", (String,), Bool, bound=False)
-UnitStr = operations.op("UnitStr", (BV,), String, bound=False) # convert BV to single-char string
 
 # Equality / inequality check
 String.__eq__ = operations.op('__eq__', (String, String), Bool)
@@ -163,7 +176,6 @@ String.__ne__ = operations.op('__ne__', (String, String), Bool)
 # String manipulation
 String.__add__ = StrConcat
 String.StrSubstr = staticmethod(StrSubstr)
-String.StrExtract = staticmethod(StrExtract)
 String.StrConcat = staticmethod(StrConcat)
 String.StrLen = staticmethod(StrLen)
 String.StrReplace = staticmethod(StrReplace)
@@ -174,4 +186,3 @@ String.StrIndexOf = staticmethod(StrIndexOf)
 String.StrToInt = staticmethod(StrToInt)
 String.StrIsDigit = staticmethod(StrIsDigit)
 String.IntToStr = staticmethod(IntToStr)
-String.UnitStr = staticmethod(UnitStr)

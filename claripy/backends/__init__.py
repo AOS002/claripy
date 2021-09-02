@@ -315,9 +315,10 @@ class Backend:
             return self._true_cache[e.cache_key]
         except KeyError:
             t = self._is_true(self.convert(e), extra_constraints=extra_constraints, solver=solver, model_callback=model_callback)
-            self._true_cache[e.cache_key] = t
-            if t is True:
-                self._false_cache[e.cache_key] = False
+            if len(extra_constraints) == 0: # Only update cache when we have no extra constraints
+                self._true_cache[e.cache_key] = t
+                if t is True:
+                    self._false_cache[e.cache_key] = False
             return t
 
     def is_false(self, e, extra_constraints=(), solver=None, model_callback=None): #pylint:disable=unused-argument
@@ -339,9 +340,10 @@ class Backend:
             return self._false_cache[e.cache_key]
         except KeyError:
             f = self._is_false(self.convert(e), extra_constraints=extra_constraints, solver=solver, model_callback=model_callback)
-            self._false_cache[e.cache_key] = f
-            if f is True:
-                self._true_cache[e.cache_key] = False
+            if len(extra_constraints) == 0: # Only update cache when we have no extra constraints
+                self._false_cache[e.cache_key] = f
+                if f is True:
+                    self._true_cache[e.cache_key] = False
             return f
 
     def _is_false(self, e, extra_constraints=(), solver=None, model_callback=None): #pylint:disable=no-self-use,unused-argument
@@ -548,7 +550,7 @@ class Backend:
 
         raise BackendError("backend doesn't support batch_eval()")
 
-    def min(self, expr, extra_constraints=(), solver=None, model_callback=None):
+    def min(self, expr, extra_constraints=(), signed=False, solver=None, model_callback=None):
         """
         Return the minimum value of `expr`.
 
@@ -556,15 +558,16 @@ class Backend:
         :param solver: a solver object, native to the backend, to assist in
                        the evaluation (for example, a z3.Solver)
         :param extra_constraints: extra constraints (as ASTs) to add to the solver for this solve
+        :param signed:  Whether to solve for the minimum signed integer instead of the unsigned min
         :param model_callback:      a function that will be executed with recovered models (if any)
         :return: the minimum possible value of expr (backend object)
         """
         if self._solver_required and solver is None:
             raise BackendError("%s requires a solver for evaluation" % self.__class__.__name__)
 
-        return self._min(self.convert(expr), extra_constraints=self.convert_list(extra_constraints), solver=solver, model_callback=model_callback)
+        return self._min(self.convert(expr), extra_constraints=self.convert_list(extra_constraints), signed=signed, solver=solver, model_callback=model_callback)
 
-    def _min(self, expr, extra_constraints=(), solver=None, model_callback=None): #pylint:disable=unused-argument,no-self-use
+    def _min(self, expr, extra_constraints=(), signed=False, solver=None, model_callback=None): #pylint:disable=unused-argument,no-self-use
         """
         Return the minimum value of expr.
 
@@ -572,12 +575,13 @@ class Backend:
         :param solver: a solver object, native to the backend, to assist in
                        the evaluation (for example, a z3.Solver)
         :param extra_constraints: extra constraints (as ASTs) to add to the solver for this solve
+        :param signed:  Whether to solve for the minimum signed integer instead of the unsigned min
         :param model_callback:      a function that will be executed with recovered models (if any)
         :return: the minimum possible value of expr (backend object)
         """
         raise BackendError("backend doesn't support min()")
 
-    def max(self, expr, extra_constraints=(), solver=None, model_callback=None):
+    def max(self, expr, extra_constraints=(), signed=False, solver=None, model_callback=None):
         """
         Return the maximum value of expr.
 
@@ -585,15 +589,16 @@ class Backend:
         :param solver: a solver object, native to the backend, to assist in
                        the evaluation (for example, a z3.Solver)
         :param extra_constraints: extra constraints (as ASTs) to add to the solver for this solve
+        :param signed:  Whether to solve for the maximum signed integer instead of the unsigned max
         :param model_callback:      a function that will be executed with recovered models (if any)
         :return: the maximum possible value of expr (backend object)
         """
         if self._solver_required and solver is None:
             raise BackendError("%s requires a solver for evaluation" % self.__class__.__name__)
 
-        return self._max(self.convert(expr), extra_constraints=self.convert_list(extra_constraints), solver=solver, model_callback=model_callback)
+        return self._max(self.convert(expr), extra_constraints=self.convert_list(extra_constraints), signed=signed, solver=solver, model_callback=model_callback)
 
-    def _max(self, expr, extra_constraints=(), solver=None, model_callback=None): #pylint:disable=unused-argument,no-self-use
+    def _max(self, expr, extra_constraints=(), signed=False, solver=None, model_callback=None): #pylint:disable=unused-argument,no-self-use
         """
         Return the maximum value of expr.
 
@@ -601,6 +606,7 @@ class Backend:
         :param solver: a solver object, native to the backend, to assist in
                        the evaluation (for example, a z3.Solver)
         :param extra_constraints: extra constraints (as ASTs) to add to the solver for this solve
+        :param signed:  Whether to solve for the maximum signed integer instead of the unsigned max
         :param model_callback:      a function that will be executed with recovered models (if any)
         :return: the maximum possible value of expr (backend object)
         """
@@ -685,22 +691,6 @@ class Backend:
     #
     # Some other methods
     #
-
-    def size(self, a):
-        """
-        This should return the size of an expression.
-
-        :param a: the AST to evaluate
-        """
-        return self._size(self.convert(a))
-
-    def _size(self, o): #pylint:disable=no-self-use,unused-argument
-        """
-        This should return the size of an object.
-
-        :param o: the (backend-native) object
-        """
-        raise BackendError("backend doesn't support size()")
 
     def name(self, a):
         """
