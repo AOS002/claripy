@@ -826,6 +826,9 @@ class Base:
                 ast = next(arg_queue[-1])
                 repl = ast
 
+                if isinstance(ast, Base):
+                    ast_without_annotations = repl.__class__(ast.op, ast.args, length=ast.length)
+
                 if not isinstance(ast, Base):
                     rep_queue.append(repl)
                     continue
@@ -833,12 +836,19 @@ class Base:
                 elif ast.cache_key in replacements:
                     repl = replacements[ast.cache_key]
 
+                elif ast_without_annotations.cache_key in replacements:
+                    repl = replacements[ast_without_annotations.cache_key]
+
                 elif ast.variables >= variable_set:
 
                     if ast.op in operations.leaf_operations:
                         repl = leaf_operation(ast)
                         if repl is not ast:
                             replacements[ast.cache_key] = repl
+
+                            # add a copy without annotations as well
+                            ast_without_annotations = repl.__class__(ast.op, ast.args, length=ast.length)
+                            replacements[ast_without_annotations.cache_key] = repl
 
                     elif ast.depth > 1:
                         arg_queue.append(iter(ast.args))
@@ -862,6 +872,10 @@ class Base:
                     if any((a is not b for a, b in zip(ast.args, args))):
                         repl = ast.make_like(ast.op, tuple(args))
                         replacements[ast.cache_key] = repl
+
+                        # add a copy without annotations as well
+                        ast_without_annotations = repl.__class__(ast.op, ast.args, length=ast.length)
+                        replacements[ast_without_annotations.cache_key] = repl
 
                     rep_queue.append(repl)
 

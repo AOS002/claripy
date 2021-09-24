@@ -102,10 +102,18 @@ class ReplacementFrontend(ConstrainedFrontend):
         try:
             return self._replacement_cache[old.cache_key]
         except KeyError:
-            # not found in the cache
+            # # check the key without annotations
+            # old_without_annotations = old.__class__(old.op, old.args, length=old.length)
+            # if old_without_annotations.cache_key in self._replacement_cache:
+            #     self._replacement_cache[old.cache_key] = self._replacement_cache[old_without_annotations.cache_key]
+            #     return self._replacement_cache[old_without_annotations.cache_key]
+            # else:
+                # not found in the cache!
             new = old.replace_dict(self._replacement_cache)
             if new is not old:
                 self._replacement_cache[old.cache_key] = new
+                old_without_annotations = old.__class__(old.op, old.args, length=old.length)
+                self._replacement_cache[old_without_annotations.cache_key] = self._replacement_cache[old.cache_key]
             return new
 
     def _add_solve_result(self, e, er, r):
