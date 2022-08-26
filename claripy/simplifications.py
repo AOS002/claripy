@@ -374,12 +374,16 @@ class SimplificationManager:
             return ast.all_operations.And(*new_args)
 
         flattened = SimplificationManager._flatten_simplifier('And', SimplificationManager._deduplicate_filter, *args)
+        if flattened.op != 'And':
+            return flattened
+
         fargs = flattened.args if flattened is not None else args
 
         # Check if we are left with one argument again
         if len(fargs) == 1:
             return fargs[0]
 
+        # what the fuck is this supposed to do?
         if any(len(arg.args) != 2 for arg in fargs):
             return flattened
 
@@ -454,7 +458,7 @@ class SimplificationManager:
             return None
 
         new_args = tuple(itertools.chain.from_iterable(
-            (a.args if isinstance(a, ast.Base) and a.op == op_name else (a,)) for a in args
+            (a.args if isinstance(a, ast.Base) and a.op == op_name and len(a.args) < 1000 else (a,)) for a in args
         ))
 
         # try to collapse multiple concrete args
@@ -470,7 +474,8 @@ class SimplificationManager:
             new_args = tuple(other_args) + (value_arg,)
 
         variables = frozenset(itertools.chain.from_iterable(a.variables for a in args if isinstance(a, ast.Base)))
-        if filter_func: new_args = filter_func(new_args)
+        if filter_func:
+            new_args = filter_func(new_args)
         if not new_args and 'initial_value' in kwargs:
             return kwargs['initial_value']
         # if a single arg is left, don't create an op for it
@@ -487,6 +492,7 @@ class SimplificationManager:
             # (x - y) + z ==> x - (y - z)
             return args[0].args[0] - (args[0].args[1] - args[1])
         return SimplificationManager._flatten_simplifier('__add__', lambda new_args: tuple(a for a in new_args if a.op != 'BVV' or a.args[0] != 0), *args, initial_value=ast.all_operations.BVV(0, len(args[0])))
+        return None
 
     @staticmethod
     def bitwise_mul_simplifier(*args):
@@ -739,31 +745,39 @@ class SimplificationManager:
 
         if val.op == 'Concat':
             pos = val.length
-            high_i, low_i, low_loc = None, None, None
+            high_i, low_i, high_loc, low_loc = None, None, None, None
             for i, v in enumerate(val.args):
                 if pos - v.length <= high < pos:
                     high_i = i
+                    high_loc = high - (pos - v.length)
                 if pos - v.length <= low < pos:
                     low_i = i
                     low_loc = low - (pos - v.length)
                 pos -= v.length
 
-            used = val.args[high_i:low_i+1]
-            if len(used) == 1:
-                self = used[0]
-            else:
-                self = ast.all_operations.Concat(*used)
+            used = list(val.args[high_i:low_i + 1])
 
-            new_high = low_loc + high - low
-            if new_high == self.length - 1 and low_loc == 0:
-                return self
-            else:
-                if self.op != 'Concat':
-                    return self[new_high:low_loc]
-                else:
-                    # to avoid infinite recursion we only return if something was simplified
-                    if len(used) != len(val.args) or new_high != high or low_loc != low:
-                        return ast.all_operations.Extract(new_high, low_loc, self)
+            # if we have only one part, we can avoid creating a new concat
+            if len(used) == 1:
+                new_high = low_loc + high - low
+                result = used[0]
+
+                # avoid extracting if we need the full value
+                if new_high == result.length - 1 and low_loc == 0:
+                    return result
+
+                # else extract the part we need
+                return result[new_high:low_loc]
+
+            # if we have more than one part, cut the parts that we need from the start & end chunks
+            # if necessary
+            if high_loc != used[0].length:
+                used[0] = used[0][high_loc:]
+
+            if low_loc != 0:
+                used[-1] = used[-1][:low_loc]
+
+            return ast.all_operations.Concat(*used)
 
         if val.op == 'Extract':
             _, inner_low = val.args[:2]
@@ -790,7 +804,11 @@ class SimplificationManager:
 
         if val.op in extract_distributable:
             all_args = tuple(a[high:low] for a in val.args)
-            return reduce(getattr(operator, val.op), all_args)
+            if val.op in flattenable:
+                # directly create a flattened AST
+                return next(a for a in all_args if isinstance(a, ast.Base)).make_like(val.op, all_args)
+            else:
+                return reduce(getattr(operator, val.op), all_args)
 
     # oh gods
     @staticmethod
@@ -1008,6 +1026,15 @@ extract_distributable = {
     '__and__', '__rand__',
     '__or__', '__ror__',
     '__xor__', '__rxor__',
+}
+
+flattenable = {
+    '__and__',
+    '__or__',
+    '__xor__',
+    '__mul__',
+    'And',
+    'Or',
 }
 
 from .backend_manager import backends
