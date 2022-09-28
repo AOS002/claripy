@@ -896,7 +896,9 @@ class Base:
                 ast = next(arg_queue[-1])
                 repl = ast
 
-                if isinstance(ast, Base):
+
+                ast_without_annotations = None
+                if isinstance(ast, Base) and len(ast.annotations) > 0:
                     ast_without_annotations = repl.__class__(ast.op, ast.args, length=ast.length)
 
                 if not isinstance(ast, Base):
@@ -906,7 +908,7 @@ class Base:
                 elif ast.cache_key in replacements:
                     repl = replacements[ast.cache_key]
 
-                elif ast_without_annotations.cache_key in replacements:
+                elif ast_without_annotations and ast_without_annotations.cache_key in replacements:
                     repl = replacements[ast_without_annotations.cache_key]
 
                 elif ast.variables >= variable_set:
@@ -917,8 +919,8 @@ class Base:
                             replacements[ast.cache_key] = repl
 
                             # add a copy without annotations as well
-                            ast_without_annotations = repl.__class__(ast.op, ast.args, length=ast.length)
-                            replacements[ast_without_annotations.cache_key] = repl
+                            if ast_without_annotations:
+                                replacements[ast_without_annotations.cache_key] = repl
 
                     elif ast.depth > 1:
                         arg_queue.append(iter(ast.args))
@@ -930,6 +932,10 @@ class Base:
 
             except StopIteration:
                 arg_queue.pop()
+
+                ast_without_annotations = None
+                if isinstance(ast, Base) and len(ast.annotations) > 0:
+                    ast_without_annotations = repl.__class__(ast.op, ast.args, length=ast.length)
 
                 if ast_queue:
                     ast = ast_queue.pop()
@@ -944,8 +950,8 @@ class Base:
                         replacements[ast.cache_key] = repl
 
                         # add a copy without annotations as well
-                        ast_without_annotations = repl.__class__(ast.op, ast.args, length=ast.length)
-                        replacements[ast_without_annotations.cache_key] = repl
+                        if ast_without_annotations:
+                            replacements[ast_without_annotations.cache_key] = repl
 
                     rep_queue.append(repl)
 
