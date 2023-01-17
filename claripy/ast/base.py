@@ -890,6 +890,8 @@ class Base:
         arg_queue = [iter([self])]
         rep_queue = []
         ast_queue = []
+        ast_hashes = {}
+        non_repl_dict = {}
 
         while arg_queue:
             try:
@@ -910,6 +912,13 @@ class Base:
 
                 elif ast_without_annotations and ast_without_annotations.cache_key in replacements:
                     repl = replacements[ast_without_annotations.cache_key]
+
+                elif ast.cache_key in non_repl_dict:
+                    # skip this ast if we have already seen it before
+                    repl = non_repl_dict[ast.cache_key]
+
+                elif ast_without_annotations and ast_without_annotations.cache_key in non_repl_dict:
+                    repl = non_repl_dict[ast_without_annotations.cache_key]
 
                 elif ast.variables >= variable_set:
 
@@ -951,7 +960,12 @@ class Base:
 
                         # add a copy without annotations as well
                         if ast_without_annotations:
+                            repl = ast_without_annotations.make_like(ast_without_annotations.op, tuple(args))
                             replacements[ast_without_annotations.cache_key] = repl
+                    else:
+                        non_repl_dict[ast.cache_key] = ast
+                        if ast_without_annotations:
+                            non_repl_dict[ast_without_annotations.ast.cache_key] = ast_without_annotations
 
                     rep_queue.append(repl)
 
