@@ -121,6 +121,20 @@ class ReplacementFrontend(ConstrainedFrontend):
             #     return self._replacement_cache[old_without_annotations.cache_key]
             # else:
                 # not found in the cache!
+
+            # This deals with MBA in the replacements, that are missed because of claripy add simplifier which adds an extra arg in __add__ insteadof creating a new op
+            if old.op == "__add__" and len(old.args) > 2:
+                poss_mba = old.args[0] + old.args[1]
+                if poss_mba.cache_key in self._replacement_cache:
+                    new_args = [self._replacement_cache[poss_mba.cache_key]]+list(old.args[2:])
+                    old = old.__class__(old.op, tuple(new_args), length=old.length)
+
+            elif old.op == "__sub__" and len(old.args) > 2:
+                poss_mba = old.args[0] - old.args[1]
+                if poss_mba.cache_key in self._replacement_cache:
+                    new_args = [self._replacement_cache[poss_mba.cache_key]]+list(old.args[2:])
+                    old = old.__class__(old.op, tuple(new_args), length=old.length)
+
             new = old.replace_dict(self._replacement_cache)
             if new is not old:
                 self._replacement_cache[old.cache_key] = new
@@ -185,7 +199,7 @@ class ReplacementFrontend(ConstrainedFrontend):
         er = self._replacement(e)
         ecr = self._replace_list(extra_constraints)
         r = self._actual_frontend.eval(er, n, extra_constraints=ecr, exact=exact)
-        if self._unsafe_replacement:
+        if self._unsafe_replacement and len(r)==1 and n>1:
             self._add_solve_result(e, er, r[0])
         return r
 
@@ -193,7 +207,7 @@ class ReplacementFrontend(ConstrainedFrontend):
         er = self._replace_list(exprs)
         ecr = self._replace_list(extra_constraints)
         r = self._actual_frontend.batch_eval(er, n, extra_constraints=ecr, exact=exact)
-        if self._unsafe_replacement:
+        if self._unsafe_replacement and len(r) == 1 and n>1:
             for i, original in enumerate(exprs):
                 self._add_solve_result(original, er[i], r[0][i])
         return r
