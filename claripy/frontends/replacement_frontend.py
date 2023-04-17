@@ -121,21 +121,22 @@ class ReplacementFrontend(ConstrainedFrontend):
             #     return self._replacement_cache[old_without_annotations.cache_key]
             # else:
                 # not found in the cache!
-
+            tmp_new=old
             # This deals with MBA in the replacements, that are missed because of claripy add simplifier which adds an extra arg in __add__ insteadof creating a new op
             if old.op == "__add__" and len(old.args) > 2:
                 poss_mba = old.args[0] + old.args[1]
                 if poss_mba.cache_key in self._replacement_cache:
                     new_args = [self._replacement_cache[poss_mba.cache_key]]+list(old.args[2:])
-                    old = old.__class__(old.op, tuple(new_args), length=old.length)
+                    tmp_new = old.__class__(old.op, tuple(new_args), length=old.length)
 
             elif old.op == "__sub__" and len(old.args) > 2:
                 poss_mba = old.args[0] - old.args[1]
                 if poss_mba.cache_key in self._replacement_cache:
                     new_args = [self._replacement_cache[poss_mba.cache_key]]+list(old.args[2:])
-                    old = old.__class__(old.op, tuple(new_args), length=old.length)
+                    tmp_new = old.__class__(old.op, tuple(new_args), length=old.length)
 
-            new = old.replace_dict(self._replacement_cache)
+
+            new = tmp_new.replace_dict(self._replacement_cache)
             if new is not old:
                 self._replacement_cache[old.cache_key] = new
                 old_without_annotations = old.__class__(old.op, old.args, length=old.length)
