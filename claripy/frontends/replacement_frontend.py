@@ -123,6 +123,8 @@ class ReplacementFrontend(ConstrainedFrontend):
                 # not found in the cache!
             tmp_new=old
             # This deals with MBA in the replacements, that are missed because of claripy add simplifier which adds an extra arg in __add__ insteadof creating a new op
+            ## WE SHOULD ALSO ADDED/MOVED  TO _replce_dict, since it may miss the deeper replacements in analyses which do not eval every expr and the expr grows in size
+            ## hopefully this doesn't happen since we replace tmp also when dealing with mba in load_vex_expr, but if it does then we gotta move this into replace_dict
             if old.op == "__add__" and len(old.args) > 2:
                 poss_mba = old.args[0] + old.args[1]
                 if poss_mba.cache_key in self._replacement_cache:
