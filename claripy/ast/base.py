@@ -556,7 +556,7 @@ class Base:
             uneliminatable_annotations = frozenset(
                 anno for anno in annotations if not anno.eliminatable and not anno.relocatable
             )
-            relocatable_annotations = tuple(anno for anno in annotations if not anno.eliminatable and anno.relocatable)
+            relocatable_annotations = tuple(frozenset(anno for anno in annotations if not anno.eliminatable and anno.relocatable))
 
             return type(self).__init_with_annotations__(
                 op,
